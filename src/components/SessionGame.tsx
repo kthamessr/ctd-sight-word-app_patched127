@@ -32,7 +32,7 @@ interface Question {
   options: string[];
 }
 
-type TrialOutcome = 'correct' | 'assisted' | 'no-answer';
+type TrialOutcome = 'correct' | 'assisted' | 'no-answer' | 'incorrect';
 
 export default function SessionGame({
   level,
@@ -54,6 +54,7 @@ export default function SessionGame({
   const [correct, setCorrect] = useState(0);
   const [assisted, setAssisted] = useState(0);
   const [noAnswer, setNoAnswer] = useState(0);
+  const [incorrect, setIncorrect] = useState(0);
 
   const [responseTypes, setResponseTypes] = useState<TrialOutcome[]>([]);
   const [responsesTimes, setResponsesTimes] = useState<number[]>([]);
@@ -119,6 +120,7 @@ export default function SessionGame({
     if (outcome === 'correct') setCorrect((c) => c + 1);
     if (outcome === 'assisted') setAssisted((a) => a + 1);
     if (outcome === 'no-answer') setNoAnswer((n) => n + 1);
+    if (outcome === 'incorrect') setIncorrect((i) => i + 1);
   }, []);
 
   const finishSession = useCallback(() => {
@@ -133,28 +135,28 @@ export default function SessionGame({
     const total = questions.length;
 
     if (isBaseline) {
-      const sessionData = createSessionData(
-        sessionNumber,
-        correct,
-        assisted,
-        noAnswer,
+      // For baseline, count correct and incorrect only
+      const baselineResponseTypes = responseTypes.map(rt => (rt === 'correct' ? 'correct' : 'incorrect'));
+      const correctCount = baselineResponseTypes.filter(rt => rt === 'correct').length;
+      const incorrectCount = baselineResponseTypes.filter(rt => rt === 'incorrect').length;
+      const sessionData = {
+        correct: correctCount,
+        incorrect: incorrectCount,
         total,
         responsesTimes,
         wordsAsked,
-        responseTypes as ('correct' | 'assisted' | 'no-answer')[],
-        baselineMode ? 'baseline' : 'intervention',
-        level
-      );
-
+        responseTypes: baselineResponseTypes,
+      };
       onGameComplete({
-        correct: sessionData.correctAnswers,
-        assisted: sessionData.assistedAnswers,
-        noAnswer: sessionData.noAnswers,
-        total: sessionData.totalQuestions,
+        correct: correctCount,
+        incorrect: incorrectCount,
+        noAnswer,
+        assisted,
+        total,
         newStreak: 0,
-        responsesTimes: sessionData.timeToRespond,
-        wordsAsked: sessionData.wordsAsked,
-        responseTypes: sessionData.responseTypes as any,
+        responsesTimes,
+        wordsAsked,
+        responseTypes: baselineResponseTypes,
       });
       return;
     }
@@ -243,8 +245,18 @@ export default function SessionGame({
       // Baseline/target: auto-advance after 10s if no response
       baselineTimeoutRef.current = setTimeout(() => {
         if (trialFinalizedRef.current) return;
-        finalizeTrial('no-answer', 10);
-        setTimeout(() => nextTrial(), 200);
+        if (sessionCompleteRef.current) return;
+
+        finalizeTrial("no-answer", 10);
+
+        const isLast = currentQuestion >= questions.length - 1;
+        if (isLast) {
+          // lock completion so nothing else can schedule
+          sessionCompleteRef.current = true;
+          setTimeout(() => finishSession(), 0);
+        } else {
+          setTimeout(() => nextTrial(), 200);
+        }
       }, 10000);
       return;
     }
@@ -457,18 +469,35 @@ export default function SessionGame({
 
     setSelectedAnswer(answer);
 
-    // Baseline/target: advance immediately on any answer; score only if correct
+    // Baseline/target: advance immediately on any answer; score as correct or incorrect
     if (isBaseline) {
       const ms = Date.now() - trialStartMsRef.current;
       const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
+      const isCorrect = answer === currentWord;
+      const outcome = isCorrect ? 'correct' : 'incorrect';
 
-      if (answer === currentWord) {
-        finalizeTrial('correct', seconds);
-      } else {
-        finalizeTrial('no-answer', seconds);
+      // If this is the last question, pass the updated responseTypes directly to finishSession
+      if (currentQuestion === questions.length - 1) {
+        const updatedResponseTypes = [...responseTypes, outcome];
+        const correctCount = updatedResponseTypes.filter(rt => rt === 'correct').length;
+        const incorrectCount = updatedResponseTypes.filter(rt => rt === 'incorrect').length;
+        const wordsAsked = questions.map((q) => q.word);
+        const total = questions.length;
+        onGameComplete({
+          correct: correctCount,
+          incorrect: incorrectCount,
+          noAnswer,
+          assisted,
+          total,
+          newStreak: 0,
+          responsesTimes: [...responsesTimes, seconds],
+          wordsAsked,
+          responseTypes: updatedResponseTypes,
+        });
+        return;
       }
 
-      // Baseline moves on immediately
+      finalizeTrial(outcome, seconds);
       setTimeout(() => nextTrial(), 200);
       return;
     }
@@ -479,9 +508,31 @@ export default function SessionGame({
       const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
 
       const assistedNow = showPrompt; // visual prompt currently visible before time-up
-      finalizeTrial(assistedNow ? 'assisted' : 'correct', seconds);
-      setShowRetry(false);
+      const outcome = assistedNow ? 'assisted' : 'correct';
 
+      // If this is the last question, pass the updated responseTypes directly to onGameComplete
+      if (currentQuestion === questions.length - 1) {
+        const updatedResponseTypes = [...responseTypes, outcome];
+        const correctCount = updatedResponseTypes.filter(rt => rt === 'correct').length;
+        const assistedCount = updatedResponseTypes.filter(rt => rt === 'assisted').length;
+        const noAnswerCount = updatedResponseTypes.filter(rt => rt === 'no-answer').length;
+        const wordsAsked = questions.map((q) => q.word);
+        const total = questions.length;
+        onGameComplete({
+          correct: correctCount,
+          assisted: assistedCount,
+          noAnswer: noAnswerCount,
+          total,
+          newStreak: correctCount === total ? 1 : 0,
+          responsesTimes: [...responsesTimes, seconds],
+          wordsAsked,
+          responseTypes: updatedResponseTypes,
+        });
+        return;
+      }
+
+      finalizeTrial(outcome, seconds);
+      setShowRetry(false);
       setTimeout(() => nextTrial(), 1500);
     } else {
       // Incorrect: allow retry, show feedback

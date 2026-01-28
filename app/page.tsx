@@ -42,6 +42,144 @@ export default function Page() {
   const [showTargetCompleteOverlay, setShowTargetCompleteOverlay] = useState(false);
   const [targetCompleteCelebrated, setTargetCompleteCelebrated] = useState(false);
 
+  // New: Hold game result to process after render
+  const [pendingGameResult, setPendingGameResult] = useState<any>(null);
+
+  // New: Effect to process game result after render
+  useEffect(() => {
+    if (!pendingGameResult) return;
+    const result = pendingGameResult;
+    // Baseline runs are recorded separately and do not advance intervention session count
+    if (baselineMode) {
+      // Baseline sessions should have their own incrementing session numbers
+      const nextBaselineSessionNumber = (baselineSessions?.length || 0) + 1;
+      // Filter out 'incorrect' from responseTypes for baseline session data
+      const filteredResponseTypes = result.responseTypes.filter(rt => rt !== 'incorrect');
+      // Remove promptType for baseline sessions (always empty)
+      const baselineSessionRaw = createSessionData(
+        nextBaselineSessionNumber,
+        result.correct,
+        result.assisted,
+        result.noAnswer,
+        result.total,
+        result.responsesTimes,
+        result.wordsAsked,
+        filteredResponseTypes,
+        'baseline',
+        gameMode
+      );
+      const baselineEntry = {
+        ...baselineSessionRaw,
+        promptType: undefined,
+      };
+      const updatedBaseline = [...baselineSessions, baselineEntry];
+      localStorage.setItem(storageKey('baselineSessions'), JSON.stringify(updatedBaseline));
+      setBaselineSessions(updatedBaseline);
+      // If the last two baseline sessions are both 100%, congratulate and suggest a higher grade level
+      if (updatedBaseline.length >= 2) {
+        const lastTwo = updatedBaseline.slice(-2);
+        const bothPerfect = lastTwo.every((s) => s.accuracy >= 100);
+        if (bothPerfect) {
+          const currentGrade = participantInfo?.gradeLevel || 1;
+          const suggested = Math.min(currentGrade + 1, 8);
+          setGradeCongrats(suggested);
+        }
+      }
+      // Baseline/target word count starts on first session (already handled by session count logic)
+      setGameState('history');
+      setPendingGameResult(null);
+      return;
+    }
+
+    // --- Intervention/mastery logic ---
+    // Filter out 'incorrect' from responseTypes for intervention session data to match expected type
+    const filteredResponseTypes = result.responseTypes.filter(rt => rt !== 'incorrect');
+    const newSession = createSessionData(
+      levelSessionNumbers[gameMode] || 1,
+      result.correct,
+      result.assisted,
+      result.noAnswer,
+      result.total,
+      result.responsesTimes,
+      result.wordsAsked,
+      filteredResponseTypes,
+      'intervention',
+      gameMode
+    );
+    const updatedSessions = [...sessions, newSession];
+
+    // Check for mastery (consecutive unprompted sessions only, after first 2 prompted)
+    const masteryAchieved = calculateMasteryPerLevel(updatedSessions, gameMode);
+    // Mark session as mastery if achieved
+    if (masteryAchieved) {
+      // Mark the last session as masteryAchieved
+      updatedSessions[updatedSessions.length - 1] = { ...updatedSessions[updatedSessions.length - 1], masteryAchieved: true };
+      // Save to localStorage
+      localStorage.setItem(storageKey('sightWordsSessions'), JSON.stringify(updatedSessions));
+      setSessions(updatedSessions);
+      setShowMasteryOverlay({ level: gameMode });
+      // Points: 10 per unprompted correct, 5 per assisted
+      const sessionPoints = result.sessionPoints ?? (result.correct * 10 + result.assisted * 5);
+      const finalScore = totalScore + sessionPoints;
+      setTotalScore(finalScore);
+      localStorage.setItem(storageKey('totalScore'), JSON.stringify(finalScore));
+      setShowCoinOverlay({ active: true, amount: sessionPoints });
+      // Animate displayScore count-up to finalScore
+      const startScore = totalScore;
+      const diff = finalScore - startScore;
+      const steps = 30;
+      const increment = Math.max(1, Math.floor(diff / steps));
+      let current = startScore;
+      const timer = setInterval(() => {
+        current += increment;
+        if (current >= finalScore) {
+          current = finalScore;
+          clearInterval(timer);
+          setTimeout(() => setShowCoinOverlay(null), 400);
+        }
+        setDisplayScore(current);
+      }, 30);
+      setTotalWordsLearned(totalWordsLearned + result.total);
+      // Show mastery overlay but allow further sessions
+      // Do not return here; allow session progression
+    }
+
+    // Save to localStorage
+    localStorage.setItem(storageKey('sightWordsSessions'), JSON.stringify(updatedSessions));
+    setSessions(updatedSessions);
+
+    // Increment the session number for this specific game mode
+    setLevelSessionNumbers(prev => ({
+      ...prev,
+      [gameMode]: (prev[gameMode] || 1) + 1
+    }));
+
+    // Points: 10 per unprompted correct, 5 per assisted
+    const sessionPoints = result.sessionPoints ?? (result.correct * 10 + result.assisted * 5);
+    const finalScore = totalScore + sessionPoints;
+    setTotalScore(finalScore);
+    localStorage.setItem(storageKey('totalScore'), JSON.stringify(finalScore));
+    setShowCoinOverlay({ active: true, amount: sessionPoints });
+    // Animate displayScore count-up to finalScore
+    const startScore = totalScore;
+    const diff = finalScore - startScore;
+    const steps = 30;
+    const increment = Math.max(1, Math.floor(diff / steps));
+    let current = startScore;
+    const timer = setInterval(() => {
+      current += increment;
+      if (current >= finalScore) {
+        current = finalScore;
+        clearInterval(timer);
+        setTimeout(() => setShowCoinOverlay(null), 400);
+      }
+      setDisplayScore(current);
+    }, 30);
+    setTotalWordsLearned(totalWordsLearned + result.total);
+    setGameState('history');
+    setPendingGameResult(null);
+  }, [pendingGameResult]);
+
   // Load targetCompleteCelebrated from localStorage on mount
   useEffect(() => {
     const stored = localStorage.getItem(storageKey('targetCompleteCelebrated'));
@@ -762,7 +900,7 @@ export default function Page() {
             <SessionGame
               level={level}
               sessionNumber={levelSessionNumbers[gameMode] || 1}
-              onGameComplete={handleGameComplete}
+              onGameComplete={setPendingGameResult}
               onCancel={() => setGameState('history')}
               targetWords={baselineMode || level === 4 ? targetWords : undefined}
               baselineMode={baselineMode}
