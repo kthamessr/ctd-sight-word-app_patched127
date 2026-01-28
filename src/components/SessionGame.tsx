@@ -35,6 +35,7 @@ interface Question {
 type TrialOutcome = 'correct' | 'assisted' | 'no-answer' | 'incorrect';
 
 export default function SessionGame({
+    // ...existing code...
   level,
   sessionNumber,
   targetWords,
@@ -42,6 +43,8 @@ export default function SessionGame({
   onGameComplete,
   onCancel,
 }: GameProps) {
+  // Track last played word to prevent repeat audio
+  const lastPlayedWordRef = useRef<string | null>(null);
   const isBaseline = baselineMode || level === 4;
   const promptConfig = useMemo(() => getPromptConfig(sessionNumber), [sessionNumber]);
 
@@ -238,8 +241,11 @@ export default function SessionGame({
     const word = questions[currentQuestion]?.word;
     if (!word) return;
 
-    // Always play audio at trial start
-    playAudioPrompt(word);
+    // Only play audio if this is a new question (not after answering)
+    if (lastPlayedWordRef.current !== word) {
+      playAudioPrompt(word);
+      lastPlayedWordRef.current = word;
+    }
 
     if (isBaseline) {
       // Baseline/target: auto-advance after 10s if no response
@@ -388,6 +394,8 @@ export default function SessionGame({
     if (!gameStarted) return;
     if (questions.length === 0) return;
     startTrial();
+    // Reset lastPlayedWord when session resets
+    lastPlayedWordRef.current = null;
   }, [currentQuestion, gameStarted, questions.length, startTrial]);
 
   // ----------------------------

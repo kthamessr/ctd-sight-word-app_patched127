@@ -20,10 +20,20 @@ export default function SessionHistory({ sessions, baselineSessions = [], onNewS
     if (session.phase === 'baseline') {
       return { label: 'Baseline', icon: '🧪', color: 'bg-slate-100' };
     }
+    if (session.level === 1) {
+      return { label: 'Level 1', icon: '🌱', color: 'bg-green-100' };
+    }
+    if (session.level === 2) {
+      return { label: 'Level 2', icon: '🌿', color: 'bg-yellow-100' };
+    }
+    if (session.level === 3) {
+      return { label: 'Level 3', icon: '🔥', color: 'bg-red-100' };
+    }
     if (session.level === 4) {
       return { label: 'Target Words', icon: '🎯', color: 'bg-purple-100' };
     }
-    return { label: 'Intervention', icon: '🌱', color: 'bg-green-100' };
+    // fallback for any other case
+    return { label: 'Session', icon: '📝', color: 'bg-gray-100' };
   }
 
   return (
