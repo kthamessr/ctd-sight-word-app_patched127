@@ -35,7 +35,6 @@ interface Question {
 type TrialOutcome = 'correct' | 'assisted' | 'no-answer' | 'incorrect';
 
 export default function SessionGame({
-    // ...existing code...
   level,
   sessionNumber,
   targetWords,
@@ -43,6 +42,8 @@ export default function SessionGame({
   onGameComplete,
   onCancel,
 }: GameProps) {
+  // Ref to skip timer reset after correct answer in intervention
+  const skipTimerResetRef = useRef(false);
   // Track last played word to prevent repeat audio
   const lastPlayedWordRef = useRef<string | null>(null);
   const isBaseline = baselineMode || level === 4;
@@ -51,11 +52,7 @@ export default function SessionGame({
   // ----------------------------
   // Core session state
   // ----------------------------
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [currentQuestion, setCurrentQuestion] = useState(0);
 
-  const [correct, setCorrect] = useState(0);
-  const [assisted, setAssisted] = useState(0);
   const [noAnswer, setNoAnswer] = useState(0);
   const [incorrect, setIncorrect] = useState(0);
 
@@ -69,14 +66,39 @@ export default function SessionGame({
   const [answered, setAnswered] = useState(false); // finalized for current trial (locks buttons)
   const [showRetry, setShowRetry] = useState(false);
 
-  const [gameStarted, setGameStarted] = useState(false);
-  const [countdown, setCountdown] = useState<number | 'Go!' | null>(3);
 
   const [timeLeft, setTimeLeft] = useState(10);
-  const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [timeExpired, setTimeExpired] = useState(false);
 
+  const [gameStarted, setGameStarted] = useState(false);
+  const [countdown, setCountdown] = useState<number | 'Go!' | null>(3);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [correct, setCorrect] = useState(0);
+  const [assisted, setAssisted] = useState(0);
   const [showPrompt, setShowPrompt] = useState(false);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
+
+
+  // Warn/block user from leaving or using back button during session
+  const sessionCompleteRef = useRef(false);
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (gameStarted && !sessionCompleteRef.current) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [gameStarted]);
+
+  // ----------------------------
+  // Core session state
+  // ----------------------------
 
   // ----------------------------
   // Refs for determinism / safety
@@ -86,7 +108,6 @@ export default function SessionGame({
   const baselineTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const trialFinalizedRef = useRef(false);
-  const sessionCompleteRef = useRef(false);
   const trialStartMsRef = useRef<number>(Date.now());
 
   const currentWord = questions[currentQuestion]?.word ?? '';
@@ -225,8 +246,13 @@ export default function SessionGame({
     setTimeExpired(false);
     setShowPrompt(false);
 
-    setTimeLeft(10);
-    setIsTimerRunning(!isBaseline);
+    // Only reset timer if not skipping (i.e., not after correct answer in intervention)
+    if (!skipTimerResetRef.current) {
+      setTimeLeft(10);
+      setIsTimerRunning(!isBaseline);
+    } else {
+      skipTimerResetRef.current = false;
+    }
 
     // Clear leftover timers from prior trial
     if (promptTimerRef.current) {
@@ -394,9 +420,14 @@ export default function SessionGame({
     if (!gameStarted) return;
     if (questions.length === 0) return;
     startTrial();
-    // Reset lastPlayedWord when session resets
-    lastPlayedWordRef.current = null;
   }, [currentQuestion, gameStarted, questions.length, startTrial]);
+
+  // Reset lastPlayedWordRef only when session resets (not on every question)
+  useEffect(() => {
+    if (!gameStarted) {
+      lastPlayedWordRef.current = null;
+    }
+  }, [gameStarted]);
 
   // ----------------------------
   // Intervention countdown timer (visible)
@@ -457,9 +488,13 @@ export default function SessionGame({
   // Answer handler
   // ----------------------------
   const handleAnswer = (answer: string) => {
+
     if (!gameStarted) return;
     if (sessionCompleteRef.current) return;
     if (questions.length === 0) return;
+
+    // Prevent multiple answers per trial
+    if (answered) return;
 
     // If time is up, only correct is allowed to proceed (no additional scoring)
     if (timeExpired) {
@@ -467,17 +502,14 @@ export default function SessionGame({
       setSelectedAnswer(answer);
       setAnswered(true);
       setShowRetry(false);
-      // Advance after a tiny delay for UX
-      setTimeout(() => nextTrial(), 200);
+      setTimeout(() => nextTrial(), 2000);
       return;
     }
 
-    // If already finalized (e.g., correct), ignore clicks
-    if (answered) return;
-
     setSelectedAnswer(answer);
+    setAnswered(true);
 
-    // Baseline/target: advance immediately on any answer; score as correct or incorrect
+    // Baseline/target: advance after 2s pause on correct, immediately on incorrect
     if (isBaseline) {
       const ms = Date.now() - trialStartMsRef.current;
       const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
@@ -506,7 +538,7 @@ export default function SessionGame({
       }
 
       finalizeTrial(outcome, seconds);
-      setTimeout(() => nextTrial(), 200);
+      setTimeout(() => nextTrial(), 200); // Always short delay for UI update
       return;
     }
 
@@ -541,7 +573,9 @@ export default function SessionGame({
 
       finalizeTrial(outcome, seconds);
       setShowRetry(false);
-      setTimeout(() => nextTrial(), 1500);
+      setIsTimerRunning(false); // Pause timer to show time taken
+      skipTimerResetRef.current = true;
+      setTimeout(() => nextTrial(), 2000);
     } else {
       // Incorrect: allow retry, show feedback
       setShowRetry(true);
@@ -638,8 +672,8 @@ export default function SessionGame({
 
           {/* Retry feedback */}
           {!isBaseline && !answered && showRetry && !timeExpired && (
-            <div className="flex items-center justify-center gap-2 mb-4 text-xl font-bold">
-              <span>Nice try</span>
+            <div className="flex items-center justify-center gap-2 mb-4 text-xl font-bold text-red-700">
+              <span>Try again</span>
               <span aria-hidden>🔄</span>
             </div>
           )}
@@ -667,7 +701,8 @@ export default function SessionGame({
               }
 
               // During timeExpired, allow clicks but only correct advances (guarded in handler)
-              const disabled = answered && !timeExpired;
+              // Only disable buttons if answered and not in retry mode
+              const disabled = answered && !showRetry && !timeExpired;
 
               return (
                 <button

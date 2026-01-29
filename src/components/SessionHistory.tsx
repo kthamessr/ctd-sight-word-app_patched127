@@ -93,10 +93,17 @@ export default function SessionHistory({ sessions, baselineSessions = [], onNewS
                   const promptType = session.promptType === 'immediate' ? 'Immediate Prompt' : 'Constant Time Delay';
                   const promptIcon = session.promptType === 'immediate' ? '⚡' : '⏱️';
                   const { label, icon, color } = getSessionTypeInfo(session);
-                  // For baseline/target: correct/incorrect; for intervention: correct/assisted/no-answer
                   const isBaselineOrTarget = session.phase === 'baseline' || session.level === 4;
-                  // Calculate incorrect for baseline/target
-                  const incorrect = isBaselineOrTarget ? (session.totalQuestions - session.correctAnswers) : undefined;
+                  const correct = session.correctAnswers;
+                  const incorrect = isBaselineOrTarget ? (session.totalQuestions - session.correctAnswers) : '';
+                  const assisted = !isBaselineOrTarget ? session.assistedAnswers : '';
+                  const noAnswer = !isBaselineOrTarget ? session.noAnswers : '';
+                  const total = session.totalQuestions;
+                  const isIntervention = !isBaselineOrTarget;
+                  const percent = isIntervention
+                    ? ((correct + (session.assistedAnswers || 0)) / total) * 100
+                    : (correct / total) * 100;
+                  const percentColor = percent >= 80 ? 'bg-green-100 text-green-800' : percent >= 60 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800';
                   return (
                     <tr key={index} className={`${color} ${index % 2 === 0 ? '' : 'bg-opacity-80'}`}>
                       <td className="px-4 py-3 font-bold text-purple-600">{session.sessionNumber}</td>
@@ -104,34 +111,17 @@ export default function SessionHistory({ sessions, baselineSessions = [], onNewS
                       <td className="px-4 py-3 text-sm font-semibold flex items-center gap-2">
                         <span className="text-xl">{icon}</span> {label}
                       </td>
-                      <td className="px-4 py-3 font-semibold text-green-700">{session.correctAnswers}</td>
-                      {isBaselineOrTarget && <td className="px-4 py-3 font-semibold text-red-700">{incorrect}</td>}
-                      {!isBaselineOrTarget && <td className="px-4 py-3 font-semibold text-blue-700">{session.assistedAnswers}</td>}
-                      {!isBaselineOrTarget && <td className="px-4 py-3 font-semibold text-red-700">{session.noAnswers}</td>}
-                      {/* Show % Correct for baseline/target; % Correct+Assisted for intervention */}
+                      <td className="px-4 py-3 font-semibold text-green-700">{correct}</td>
+                      {/* Always render Incorrect, Assisted, No-Answer columns for alignment */}
+                      <td className="px-4 py-3 font-semibold text-red-700">{isBaselineOrTarget ? incorrect : ''}</td>
+                      <td className="px-4 py-3 font-semibold text-blue-700">{!isBaselineOrTarget ? assisted : ''}</td>
+                      <td className="px-4 py-3 font-semibold text-red-700">{!isBaselineOrTarget ? noAnswer : ''}</td>
                       <td className="px-4 py-3">
-                        {(() => {
-                          const isIntervention = !(session.phase === 'baseline' || session.level === 4);
-                          const correct = session.correctAnswers;
-                          const assisted = session.assistedAnswers || 0;
-                          const total = session.totalQuestions;
-                          const percent = isIntervention
-                            ? ((correct + assisted) / total) * 100
-                            : (correct / total) * 100;
-                          const color = percent >= 80 ? 'bg-green-100 text-green-800' : percent >= 60 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800';
-                          return (
-                            <span className={`px-3 py-1 rounded-full text-sm font-bold ${color}`}>
-                              {total > 0 ? percent.toFixed(1) : '0.0'}%
-                            </span>
-                          );
-                        })()}
+                        <span className={`px-3 py-1 rounded-full text-sm font-bold ${percentColor}`}>
+                          {total > 0 ? percent.toFixed(1) : '0.0'}%
+                        </span>
                       </td>
-                      {/* Only show Prompt Type cell for intervention sessions */}
-                      {!(isBaselineOrTarget) && (
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {promptIcon} {promptType}
-                        </td>
-                      )}
+                      <td className="px-4 py-3 text-sm text-gray-600">{!isBaselineOrTarget ? `${promptIcon} ${promptType}` : ''}</td>
                     </tr>
                   );
                 })}
