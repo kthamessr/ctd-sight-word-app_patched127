@@ -101,7 +101,7 @@ export default function SessionHistory({ sessions, baselineSessions = [], onNewS
                   const total = session.totalQuestions;
                   const isIntervention = !isBaselineOrTarget;
                   const percent = isIntervention
-                    ? ((correct + (session.assistedAnswers || 0)) / total) * 100
+                    ? ((correct + 0.5 * (session.assistedAnswers || 0)) / total) * 100
                     : (correct / total) * 100;
                   const percentColor = percent >= 80 ? 'bg-green-100 text-green-800' : percent >= 60 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800';
                   return (

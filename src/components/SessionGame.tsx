@@ -135,7 +135,10 @@ export default function SessionGame({
     if (trialFinalizedRef.current) return;
     trialFinalizedRef.current = true;
 
-    setAnswered(true);
+    // Only set answered true for correct/assisted/no-answer, not for incorrect
+    if (outcome === 'correct' || outcome === 'assisted' || outcome === 'no-answer') {
+      setAnswered(true);
+    }
     setIsTimerRunning(false);
 
     setResponseTypes((prev) => [...prev, outcome]);
@@ -246,10 +249,13 @@ export default function SessionGame({
     setTimeExpired(false);
     setShowPrompt(false);
 
-    // Only reset timer if not skipping (i.e., not after correct answer in intervention)
-    if (!skipTimerResetRef.current) {
+    // Only reset timer if not skipping and not after timeExpired
+    if (!skipTimerResetRef.current && !timeExpired) {
       setTimeLeft(10);
       setIsTimerRunning(!isBaseline);
+    } else if (timeExpired) {
+      // If timeExpired, do not reset UI or timer; just advance to next question
+      return;
     } else {
       skipTimerResetRef.current = false;
     }
@@ -451,15 +457,12 @@ export default function SessionGame({
           setTimeExpired(true);
           setIsTimerRunning(false);
           setShowPrompt(false);
-          // Keep answered=false so buttons remain clickable
-          setAnswered(false);
-          setSelectedAnswer(null);
           setShowRetry(false);
+          setSelectedAnswer(null);
+          // Do not set answered=true; allow user to tap correct answer to advance
 
           if (!trialFinalizedRef.current) {
             finalizeTrial('no-answer', 10);
-            // finalizeTrial sets answered=true; we need it false for click-to-advance
-            setAnswered(false);
           }
           return 0;
         }
@@ -493,24 +496,27 @@ export default function SessionGame({
     if (sessionCompleteRef.current) return;
     if (questions.length === 0) return;
 
-    // Prevent multiple answers per trial
-    if (answered) return;
+    // Prevent multiple answers per trial, except when timeExpired (for tap-to-advance)
+    // Only block if correct/assisted or timeExpired and not correct
+    if ((answered && !showRetry && !timeExpired) || (timeExpired && answered)) return;
 
-    // If time is up, only correct is allowed to proceed (no additional scoring)
+    // If time is up, require user to tap correct answer to advance (no scoring)
     if (timeExpired) {
       if (answer !== currentWord) return;
       setSelectedAnswer(answer);
       setAnswered(true);
       setShowRetry(false);
-      setTimeout(() => nextTrial(), 2000);
+      // Auto-advance after short delay, but keep highlight and 'This one' visible
+      setTimeout(() => {
+        nextTrial();
+      }, 1200);
       return;
     }
 
-    setSelectedAnswer(answer);
-    setAnswered(true);
-
     // Baseline/target: advance after 2s pause on correct, immediately on incorrect
     if (isBaseline) {
+      setSelectedAnswer(answer);
+      setAnswered(true);
       const ms = Date.now() - trialStartMsRef.current;
       const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
       const isCorrect = answer === currentWord;
@@ -544,6 +550,8 @@ export default function SessionGame({
 
     // Intervention: retry on incorrect; finalize on correct
     if (answer === currentWord) {
+      setSelectedAnswer(answer);
+      setAnswered(true);
       const ms = Date.now() - trialStartMsRef.current;
       const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
 
@@ -577,9 +585,12 @@ export default function SessionGame({
       skipTimerResetRef.current = true;
       setTimeout(() => nextTrial(), 2000);
     } else {
-      // Incorrect: allow retry, show feedback
+      // Incorrect: allow retry, show feedback, keep timer running
+      setSelectedAnswer(answer);
+      setAnswered(false); // allow more answers
       setShowRetry(true);
-      setTimeout(() => setSelectedAnswer(null), 200);
+      // Remove red highlight after short delay
+      setTimeout(() => setSelectedAnswer(null), 400);
     }
   };
 
@@ -602,6 +613,7 @@ export default function SessionGame({
     );
   }
 
+  // Main render
   return (
     <div className="min-h-screen flex flex-col items-center justify-start p-6 bg-gradient-to-b from-blue-700 to-blue-900">
       <div className="w-full max-w-4xl">
@@ -613,13 +625,11 @@ export default function SessionGame({
             }}
             className="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg font-semibold"
           >
-            ← Back
+            {'<'} Back
           </button>
-
           <div className="text-lg font-bold">
             Question {Math.min(currentQuestion + 1, questions.length)}/{questions.length}
           </div>
-
           {!isBaseline ? (
             <div className="text-lg font-bold">
               Accuracy: {correct}/{trialsFinalized}
@@ -648,7 +658,6 @@ export default function SessionGame({
             ) : (
               <div className="text-xl font-extrabold text-gray-700">&nbsp;</div>
             )}
-
             {!isBaseline ? (
               <div className="text-xl font-extrabold text-gray-800">Coins: {pointsSoFar}</div>
             ) : (
@@ -678,39 +687,45 @@ export default function SessionGame({
             </div>
           )}
 
+          {/* Centered visual prompt (if enabled) */}
+          {/* Always show prompt if timeExpired or showPrompt is true */}
+          {!isBaseline && (showPrompt || timeExpired) && (
+            <div className="flex-grow flex flex-col items-center justify-center text-center text-gray-700 mb-6">
+              <div className="text-sm uppercase tracking-wide font-semibold">Prompt</div>
+              <div className="text-3xl font-extrabold mt-1">{currentWord}</div>
+            </div>
+          )}
+
           {/* Answer options */}
           <div className="grid grid-cols-2 gap-6 mb-6 w-full max-w-2xl mx-auto">
             {allOptions.map((option, idx) => {
-              let buttonClass =
-                'bg-white border-2 border-gray-300 hover:border-blue-500 text-gray-800';
-
-              // Time-up highlighting
+              let buttonClass = "bg-white border-2 border-gray-300 hover:border-blue-500 text-gray-900";
+              // Time-up highlighting (ONLY time we reveal the correct answer)
               if (!isBaseline && timeExpired) {
                 if (option === currentWord) {
-                  buttonClass = 'bg-yellow-100 border-2 border-yellow-500 text-yellow-900';
+                  buttonClass = "bg-green-100 border-2 border-green-500 text-green-900";
                 } else {
-                  buttonClass = 'bg-gray-50 border-2 border-gray-200 text-gray-400';
-                }
-              } else if (!isBaseline && answered) {
-                // Feedback after finalized answer
-                if (option === currentWord) {
-                  buttonClass = 'bg-green-100 border-2 border-green-500 text-green-800';
-                } else if (option === selectedAnswer && option !== currentWord) {
-                  buttonClass = 'bg-red-100 border-2 border-red-500 text-red-800';
+                  buttonClass = "bg-gray-50 border-2 border-gray-200 text-gray-400";
                 }
               }
-
-              // During timeExpired, allow clicks but only correct advances (guarded in handler)
-              // Only disable buttons if answered and not in retry mode
-              const disabled = answered && !showRetry && !timeExpired;
-
+              // Retry highlighting (optional flash red on the wrong choice)
+              if (!isBaseline && showRetry && !timeExpired) {
+                if (selectedAnswer && option === selectedAnswer && selectedAnswer !== currentWord) {
+                  buttonClass = "bg-red-100 border-2 border-red-500 text-red-900";
+                }
+              }
+              // ONLY disable wrong answers when time is up
+              let disabled = false;
+              if (!isBaseline && timeExpired) {
+                disabled = option !== currentWord;
+              }
               return (
                 <button
                   key={idx}
                   onClick={() => handleAnswer(option)}
                   disabled={disabled}
                   className={`p-8 rounded-xl font-bold text-2xl transition-all transform hover:scale-105 ${buttonClass} ${
-                    disabled ? 'cursor-default' : 'cursor-pointer hover:shadow-xl'
+                    disabled ? "cursor-default" : "cursor-pointer hover:shadow-xl"
                   }`}
                 >
                   <div className="flex flex-col items-center">
@@ -725,14 +740,6 @@ export default function SessionGame({
               );
             })}
           </div>
-
-          {/* Show prompt word (visual prompt) if enabled */}
-          {!isBaseline && !timeExpired && showPrompt && (
-            <div className="text-center text-gray-700">
-              <div className="text-sm uppercase tracking-wide font-semibold">Prompt</div>
-              <div className="text-3xl font-extrabold mt-1">{currentWord}</div>
-            </div>
-          )}
         </div>
       </div>
     </div>

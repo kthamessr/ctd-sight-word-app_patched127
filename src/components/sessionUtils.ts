@@ -55,8 +55,8 @@ export function createSessionData(
 ): SessionData {
   const promptConfig = getPromptConfig(sessionNumber);
   // After session 2, count prompted responses as 50% of full value (0.5 weight)
-  const assistedWeight = sessionNumber <= 2 ? 1.0 : 0.5;
-  const weightedScore = correct + (assisted * assistedWeight);
+  // Always: correct = 1, assisted = 0.5
+  const weightedScore = correct + (assisted * 0.5);
   // Clamp to 0 if total is 0 to avoid NaN
   const accuracy = total > 0 ? (weightedScore / total) * 100 : 0;
   return {
