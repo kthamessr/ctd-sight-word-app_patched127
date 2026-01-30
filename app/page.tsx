@@ -139,7 +139,7 @@ export default function Page() {
         }
         setDisplayScore(current);
       }, 30);
-      setTotalWordsLearned(totalWordsLearned + result.total);
+      setTotalWordsLearned(totalWordsLearned + (typeof result.total === 'number' && !isNaN(result.total) ? result.total : 0));
       // Show mastery overlay but allow further sessions
       // Do not return here; allow session progression
     }
@@ -175,7 +175,7 @@ export default function Page() {
       }
       setDisplayScore(current);
     }, 30);
-    setTotalWordsLearned(totalWordsLearned + result.total);
+    setTotalWordsLearned(totalWordsLearned + (typeof result.total === 'number' && !isNaN(result.total) ? result.total : 0));
     setGameState('history');
     setPendingGameResult(null);
   }, [pendingGameResult]);
@@ -573,7 +573,7 @@ export default function Page() {
         }
         setDisplayScore(current);
       }, 30);
-      setTotalWordsLearned(totalWordsLearned + result.total);
+      setTotalWordsLearned(totalWordsLearned + (typeof result.total === 'number' && !isNaN(result.total) ? result.total : 0));
       // Stay on overlay until user dismisses
       return;
     }
@@ -609,7 +609,7 @@ export default function Page() {
       }
       setDisplayScore(current);
     }, 30);
-    setTotalWordsLearned(totalWordsLearned + result.total);
+    setTotalWordsLearned(totalWordsLearned + (typeof result.total === 'number' && !isNaN(result.total) ? result.total : 0));
     setGameState('history');
   };
 

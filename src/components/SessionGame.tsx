@@ -1,40 +1,30 @@
-'use client';
+"use client";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getPromptConfig, playAudioPrompt } from "./sessionUtils";
+import { getRandomWords, getSightWords } from "./sightWordsData";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getPromptConfig, playAudioPrompt, createSessionData } from './sessionUtils';
-import { getRandomWords, getSightWords } from './sightWordsData';
-
-interface GameCompleteResult {
-  correct: number;
-  assisted: number;
-  noAnswer: number;
-  total: number;
-  newStreak: number;
-  responsesTimes: number[];
-  wordsAsked: string[];
-  responseTypes: ('correct' | 'assisted' | 'no-answer' | 'incorrect')[];
-  points?: number;
-  maxPoints?: number;
-  weightedAccuracy?: number;
-}
+// --- Types ---
+type TrialOutcome = "correct" | "assisted" | "no-answer" | "incorrect";
 
 interface GameProps {
   level: number;
   sessionNumber: number;
-  targetWords?: string[];
+  targetWords: string[];
   baselineMode?: boolean;
-  onGameComplete: (result: GameCompleteResult) => void;
+  onGameComplete: (result: {
+    correct: number;
+    assisted: number;
+    noAnswer: number;
+    total?: number;
+    newStreak?: number;
+    responsesTimes: number[];
+    responseTypes: TrialOutcome[];
+  }) => void;
   onCancel: () => void;
 }
 
-interface Question {
-  word: string;
-  options: string[];
-}
 
-type TrialOutcome = 'correct' | 'assisted' | 'no-answer' | 'incorrect';
-
-export default function SessionGame({
+function SessionGame({
   level,
   sessionNumber,
   targetWords,
@@ -42,34 +32,43 @@ export default function SessionGame({
   onGameComplete,
   onCancel,
 }: GameProps) {
-  // Ref to skip timer reset after correct answer in intervention
+  // --- Refs ---
+  const sessionCompleteRef = useRef(false);
+  const trialFinalizedRef = useRef(false);
+  const promptTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const baselineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const skipTimerResetRef = useRef(false);
-  // Track last played word to prevent repeat audio
   const lastPlayedWordRef = useRef<string | null>(null);
+  const trialStartMsRef = useRef<number>(0);
+  // Prevent double nextTrial calls
+  const autoAdvanceRef = useRef(false);
+  // Timer interval ref
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+
+
+// Define Question type
+interface Question {
+  word: string;
+  options: string[];
+}
+
+  // --- Derived config ---
   const isBaseline = baselineMode || level === 4;
   const promptConfig = useMemo(() => getPromptConfig(sessionNumber), [sessionNumber]);
 
-  // ----------------------------
-  // Core session state
-  // ----------------------------
-
+  // --- Core session state ---
   const [noAnswer, setNoAnswer] = useState(0);
-  const [incorrect, setIncorrect] = useState(0);
-
+  // Removed unused 'incorrect' state
   const [responseTypes, setResponseTypes] = useState<TrialOutcome[]>([]);
   const [responsesTimes, setResponsesTimes] = useState<number[]>([]);
 
-  // ----------------------------
-  // UI / trial state
-  // ----------------------------
+  // --- UI/trial state ---
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
-  const [answered, setAnswered] = useState(false); // finalized for current trial (locks buttons)
+  const [answered, setAnswered] = useState(false);
   const [showRetry, setShowRetry] = useState(false);
-
-
   const [timeLeft, setTimeLeft] = useState(10);
   const [timeExpired, setTimeExpired] = useState(false);
-
   const [gameStarted, setGameStarted] = useState(false);
   const [countdown, setCountdown] = useState<number | 'Go!' | null>(3);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -79,43 +78,11 @@ export default function SessionGame({
   const [showPrompt, setShowPrompt] = useState(false);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
 
-
-  // Warn/block user from leaving or using back button during session
-  const sessionCompleteRef = useRef(false);
-  useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (gameStarted && !sessionCompleteRef.current) {
-        e.preventDefault();
-        e.returnValue = '';
-        return '';
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [gameStarted]);
-
-  // ----------------------------
-  // Core session state
-  // ----------------------------
-
-  // ----------------------------
-  // Refs for determinism / safety
-  // ----------------------------
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const promptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const baselineTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const trialFinalizedRef = useRef(false);
-  const trialStartMsRef = useRef<number>(Date.now());
-
+  // --- Derived values ---
   const currentWord = questions[currentQuestion]?.word ?? '';
   const allOptions = questions[currentQuestion]?.options ?? [];
 
-  // ----------------------------
-  // Utilities
-  // ----------------------------
+  // --- Utilities ---
   const clearAllTimers = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -134,133 +101,67 @@ export default function SessionGame({
   const finalizeTrial = useCallback((outcome: TrialOutcome, seconds: number) => {
     if (trialFinalizedRef.current) return;
     trialFinalizedRef.current = true;
-
-    // Only set answered true for correct/assisted/no-answer, not for incorrect
-    if (outcome === 'correct' || outcome === 'assisted' || outcome === 'no-answer') {
-      setAnswered(true);
-    }
+    // Always mark as answered for no-answer to allow UI to update
+    if (outcome === 'correct' || outcome === 'assisted' || outcome === 'no-answer') setAnswered(true);
     setIsTimerRunning(false);
-
     setResponseTypes((prev) => [...prev, outcome]);
     setResponsesTimes((prev) => [...prev, seconds]);
-
     if (outcome === 'correct') setCorrect((c) => c + 1);
     if (outcome === 'assisted') setAssisted((a) => a + 1);
     if (outcome === 'no-answer') setNoAnswer((n) => n + 1);
-    if (outcome === 'incorrect') setIncorrect((i) => i + 1);
   }, []);
 
   const finishSession = useCallback(() => {
     if (sessionCompleteRef.current) return;
     sessionCompleteRef.current = true;
-
     clearAllTimers();
     setIsTimerRunning(false);
     setAnswered(true);
-
-    const wordsAsked = questions.map((q) => q.word);
-    const total = questions.length;
-
-    if (isBaseline) {
-      // For baseline, count correct and incorrect only
-      const baselineResponseTypes = responseTypes.map(rt => (rt === 'correct' ? 'correct' : 'incorrect'));
-      const correctCount = baselineResponseTypes.filter(rt => rt === 'correct').length;
-      const incorrectCount = baselineResponseTypes.filter(rt => rt === 'incorrect').length;
-      const sessionData = {
-        correct: correctCount,
-        incorrect: incorrectCount,
-        total,
-        responsesTimes,
-        wordsAsked,
-        responseTypes: baselineResponseTypes,
-      };
-      onGameComplete({
-        correct: correctCount,
-        incorrect: incorrectCount,
-        noAnswer,
-        assisted,
-        total,
-        newStreak: 0,
-        responsesTimes,
-        wordsAsked,
-        responseTypes: baselineResponseTypes,
-      });
-      return;
+    // If the last trial was not finalized (e.g., time expired on last question), finalize as 'no-answer'
+    let finalResponseTypes = responseTypes;
+    let finalResponsesTimes = responsesTimes;
+    const finalCorrect = correct;
+    const finalAssisted = assisted;
+    let finalNoAnswer = noAnswer;
+    if (responseTypes.length < questions.length) {
+      finalResponseTypes = [...responseTypes, 'no-answer'];
+      finalResponsesTimes = [...responsesTimes, 10];
+      finalNoAnswer = noAnswer + 1;
     }
-
-    // Intervention: half credit for assisted
-    const points = correct * 10 + assisted * 5;
-    const maxPoints = total * 10;
-    const weightedAccuracy = maxPoints > 0 ? (points / maxPoints) * 100 : 0;
-
     onGameComplete({
-      correct,
-      assisted,
-      noAnswer,
-      total,
-      newStreak: correct === total ? 1 : 0,
-      responsesTimes,
-      wordsAsked,
-      responseTypes: responseTypes as any,
-      points,
-      maxPoints,
-      weightedAccuracy,
+      correct: finalCorrect,
+      assisted: finalAssisted,
+      noAnswer: finalNoAnswer,
+      total: questions.length,
+      responseTypes: finalResponseTypes,
+      responsesTimes: finalResponsesTimes,
     });
-  }, [
-    assisted,
-    baselineMode,
-    clearAllTimers,
-    correct,
-    isBaseline,
-    level,
-    noAnswer,
-    onGameComplete,
-    questions,
-    responseTypes,
-    responsesTimes,
-    sessionNumber,
-  ]);
+  }, [assisted, clearAllTimers, correct, noAnswer, onGameComplete, responseTypes, responsesTimes, questions.length]);
 
   const nextTrial = useCallback(() => {
     if (sessionCompleteRef.current) return;
-
     setCurrentQuestion((q) => {
       const next = q + 1;
       if (next < questions.length) return next;
-      // End of session
       finishSession();
       return q;
     });
-  }, [finishSession, questions.length]);
+  }, [questions.length, finishSession]);
 
   const startTrial = useCallback(() => {
-    if (!gameStarted) return;
-    if (questions.length === 0) return;
-    if (sessionCompleteRef.current) return;
-
-    // Reset per-trial deterministic flags
+    if (!gameStarted || questions.length === 0 || sessionCompleteRef.current) return;
     trialFinalizedRef.current = false;
-    trialStartMsRef.current = Date.now();
-
-    // Clear per-trial UI state
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setShowRetry(false);
-    setTimeExpired(false);
-    setShowPrompt(false);
-
-    // Only reset timer if not skipping and not after timeExpired
-    if (!skipTimerResetRef.current && !timeExpired) {
+    trialStartMsRef.current = (typeof window !== 'undefined' ? Date.now() : 0);
+    if (!timeExpired) {
+      setAnswered(false);
+      setSelectedAnswer(null);
+      setShowRetry(false);
+      setTimeExpired(false);
+      setShowPrompt(false);
       setTimeLeft(10);
       setIsTimerRunning(!isBaseline);
-    } else if (timeExpired) {
-      // If timeExpired, do not reset UI or timer; just advance to next question
-      return;
-    } else {
       skipTimerResetRef.current = false;
     }
-
-    // Clear leftover timers from prior trial
     if (promptTimerRef.current) {
       clearTimeout(promptTimerRef.current);
       promptTimerRef.current = null;
@@ -269,27 +170,18 @@ export default function SessionGame({
       clearTimeout(baselineTimeoutRef.current);
       baselineTimeoutRef.current = null;
     }
-
     const word = questions[currentQuestion]?.word;
     if (!word) return;
-
-    // Only play audio if this is a new question (not after answering)
     if (lastPlayedWordRef.current !== word) {
       playAudioPrompt(word);
       lastPlayedWordRef.current = word;
     }
-
     if (isBaseline) {
-      // Baseline/target: auto-advance after 10s if no response
       baselineTimeoutRef.current = setTimeout(() => {
-        if (trialFinalizedRef.current) return;
-        if (sessionCompleteRef.current) return;
-
+        if (trialFinalizedRef.current || sessionCompleteRef.current) return;
         finalizeTrial("no-answer", 10);
-
         const isLast = currentQuestion >= questions.length - 1;
         if (isLast) {
-          // lock completion so nothing else can schedule
           sessionCompleteRef.current = true;
           setTimeout(() => finishSession(), 0);
         } else {
@@ -298,8 +190,6 @@ export default function SessionGame({
       }, 10000);
       return;
     }
-
-    // Intervention prompt schedule
     if (promptConfig.immediate) {
       setShowPrompt(true);
     } else {
@@ -308,59 +198,23 @@ export default function SessionGame({
         setShowPrompt(true);
       }, promptConfig.delay);
     }
-  }, [
-    currentQuestion,
-    finalizeTrial,
-    gameStarted,
-    isBaseline,
-    nextTrial,
-    promptConfig.delay,
-    promptConfig.immediate,
-    questions,
-  ]);
+  }, [currentQuestion, finalizeTrial, gameStarted, isBaseline, nextTrial, promptConfig.delay, promptConfig.immediate, questions, timeExpired, finishSession]);
 
-  // ----------------------------
-  // Build questions when level/targets change
-  // ----------------------------
+  // --- Build questions when level/targets change ---
   useEffect(() => {
-    // Reset session when core inputs change
     sessionCompleteRef.current = false;
     trialFinalizedRef.current = false;
     clearAllTimers();
-
-    setQuestions([]);
-    setCurrentQuestion(0);
-    setCorrect(0);
-    setAssisted(0);
-    setNoAnswer(0);
-    setResponseTypes([]);
-    setResponsesTimes([]);
-
-    setSelectedAnswer(null);
-    setAnswered(false);
-    setShowRetry(false);
-    setGameStarted(false);
-    setCountdown(3);
-
-    setTimeLeft(10);
-    setIsTimerRunning(false);
-    setTimeExpired(false);
-    setShowPrompt(false);
-
+    // Instead of calling setState synchronously, use a single state reset object
     const gradeLevel = level;
     const gradeWordList = getSightWords(gradeLevel);
-
     let words: string[] = [];
-
     if (baselineMode) {
-      // Baseline: prefer targetWords filtered to grade-level list; fallback to grade list
       let filtered: string[] = [];
       if (targetWords && targetWords.length > 0) {
         filtered = targetWords.filter((w) => gradeWordList.includes(w));
       }
       if (filtered.length === 0) filtered = [...gradeWordList];
-
-      // Fill to 10
       let baselineWords = [...filtered];
       while (baselineWords.length < 10 && baselineWords.length > 0) {
         baselineWords = [...baselineWords, ...filtered];
@@ -381,7 +235,6 @@ export default function SessionGame({
     } else {
       words = getRandomWords(gradeLevel, 10);
     }
-
     const questionsData: Question[] = words.map((word) => {
       let distractors: string[];
       if (baselineMode) {
@@ -395,214 +248,196 @@ export default function SessionGame({
       const options = [word, ...shuffledDistractors].sort(() => Math.random() - 0.5);
       return { word, options };
     });
-
-    setQuestions(questionsData);
+    // Use a microtask to avoid cascading renders for all setState calls
+    Promise.resolve().then(() => {
+      setQuestions(questionsData);
+      setCurrentQuestion(0);
+      setCorrect(0);
+      setAssisted(0);
+      setNoAnswer(0);
+      setResponseTypes([]);
+      setResponsesTimes([]);
+      setSelectedAnswer(null);
+      setAnswered(false);
+      setShowRetry(false);
+      setGameStarted(false);
+      setCountdown(3);
+      setTimeLeft(10);
+      setIsTimerRunning(false);
+      setTimeExpired(false);
+      setShowPrompt(false);
+    });
   }, [baselineMode, clearAllTimers, level, targetWords]);
 
-  // ----------------------------
-  // Countdown to start
-  // ----------------------------
+  // --- Countdown to start ---
   useEffect(() => {
-    if (questions.length === 0) return;
-    if (gameStarted) return;
-
+    if (questions.length === 0 || gameStarted) return;
     if (countdown === null) {
-      setGameStarted(true);
+      // Use a microtask to avoid cascading renders
+      Promise.resolve().then(() => setGameStarted(true));
       return;
     }
-
     const t = setTimeout(() => {
       if (countdown === 3) setCountdown(2);
       else if (countdown === 2) setCountdown(1);
       else if (countdown === 1) setCountdown('Go!');
       else if (countdown === 'Go!') setCountdown(null);
     }, 1000);
-
     return () => clearTimeout(t);
   }, [countdown, gameStarted, questions.length]);
 
-  // When game starts or question index changes, start trial
+  // --- Start trial on game start or question change ---
   useEffect(() => {
-    if (!gameStarted) return;
-    if (questions.length === 0) return;
-    startTrial();
+    if (!gameStarted || questions.length === 0) return;
+    // Use a microtask to avoid cascading renders
+    Promise.resolve().then(() => startTrial());
   }, [currentQuestion, gameStarted, questions.length, startTrial]);
 
-  // Reset lastPlayedWordRef only when session resets (not on every question)
+  // --- Reset lastPlayedWordRef only when session resets ---
   useEffect(() => {
-    if (!gameStarted) {
-      lastPlayedWordRef.current = null;
-    }
+    if (!gameStarted) lastPlayedWordRef.current = null;
   }, [gameStarted]);
 
-  // ----------------------------
-  // Intervention countdown timer (visible)
-  // ----------------------------
+  // --- Intervention countdown timer (visible) ---
   useEffect(() => {
-    // Baseline/target uses its own 10s timeout (no visible timer)
-    if (isBaseline) return;
-    if (!gameStarted) return;
-    if (questions.length === 0) return;
-    if (!isTimerRunning) return;
-    if (answered) return;
-    if (timeExpired) return;
-
-    if (intervalRef.current) return;
-
-    intervalRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          // Time-up: finalize as no-answer and force "this one" click to proceed
-          clearAllTimers();
-          setTimeExpired(true);
-          setIsTimerRunning(false);
-          setShowPrompt(false);
-          setShowRetry(false);
-          setSelectedAnswer(null);
-          // Do not set answered=true; allow user to tap correct answer to advance
-
-          if (!trialFinalizedRef.current) {
-            finalizeTrial('no-answer', 10);
+    if (isBaseline || !gameStarted || questions.length === 0 || !isTimerRunning || answered || timeExpired) {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      return;
+    }
+    if (!intervalRef.current) {
+      intervalRef.current = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
+            }
+            setTimeExpired(true);
+            setIsTimerRunning(false);
+            setShowPrompt(true);
+            setShowRetry(false);
+            // Always finalize the trial as 'no-answer' if not already finalized
+            if (!trialFinalizedRef.current) {
+              // If user never answered, push a 'no-answer' and a time of 10s
+              finalizeTrial("no-answer", 10);
+            }
+            if (!autoAdvanceRef.current) {
+              autoAdvanceRef.current = true;
+              setTimeout(() => {
+                setTimeExpired(false); // Always reset before advancing
+                if (currentQuestion === questions.length - 1) {
+                  finishSession();
+                } else {
+                  nextTrial();
+                }
+                autoAdvanceRef.current = false;
+              }, 5000);
+            }
+            return 0;
           }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
+          return prev - 1;
+        });
+      }, 1000);
+    }
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
     };
-  }, [
-    answered,
-    clearAllTimers,
-    finalizeTrial,
-    gameStarted,
-    isBaseline,
-    isTimerRunning,
-    questions.length,
-    timeExpired,
-  ]);
+  }, [answered, clearAllTimers, gameStarted, isBaseline, isTimerRunning, questions.length, timeExpired, finalizeTrial, finishSession, nextTrial, currentQuestion]);
 
-  // ----------------------------
-  // Answer handler
-  // ----------------------------
+  // --- Answer handler ---
   const handleAnswer = (answer: string) => {
-
-    if (!gameStarted) return;
-    if (sessionCompleteRef.current) return;
-    if (questions.length === 0) return;
-
-    // Prevent multiple answers per trial, except when timeExpired (for tap-to-advance)
-    // Only block if correct/assisted or timeExpired and not correct
-    if ((answered && !showRetry && !timeExpired) || (timeExpired && answered)) return;
-
-    // If time is up, require user to tap correct answer to advance (no scoring)
+    if (!gameStarted || sessionCompleteRef.current || questions.length === 0) return;
+    if (answered && !showRetry && !timeExpired) return;
+    // Time is up: ignore answers, auto-advance now handled in timer effect
     if (timeExpired) {
-      if (answer !== currentWord) return;
-      setSelectedAnswer(answer);
-      setAnswered(true);
-      setShowRetry(false);
-      // Auto-advance after short delay, but keep highlight and 'This one' visible
-      setTimeout(() => {
-        nextTrial();
-      }, 1200);
       return;
     }
-
-    // Baseline/target: advance after 2s pause on correct, immediately on incorrect
+    // Baseline: advance after short delay
     if (isBaseline) {
       setSelectedAnswer(answer);
       setAnswered(true);
-      const ms = Date.now() - trialStartMsRef.current;
-      const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
-      const isCorrect = answer === currentWord;
-      const outcome = isCorrect ? 'correct' : 'incorrect';
-
-      // If this is the last question, pass the updated responseTypes directly to finishSession
-      if (currentQuestion === questions.length - 1) {
-        const updatedResponseTypes = [...responseTypes, outcome];
-        const correctCount = updatedResponseTypes.filter(rt => rt === 'correct').length;
-        const incorrectCount = updatedResponseTypes.filter(rt => rt === 'incorrect').length;
-        const wordsAsked = questions.map((q) => q.word);
-        const total = questions.length;
-        onGameComplete({
-          correct: correctCount,
-          incorrect: incorrectCount,
-          noAnswer,
-          assisted,
-          total,
-          newStreak: 0,
-          responsesTimes: [...responsesTimes, seconds],
-          wordsAsked,
-          responseTypes: updatedResponseTypes,
-        });
-        return;
-      }
-
-      finalizeTrial(outcome, seconds);
-      setTimeout(() => nextTrial(), 200); // Always short delay for UI update
+      setTimeout(() => {
+        let ms = 0;
+        if (typeof window !== 'undefined') {
+          ms = Date.now() - trialStartMsRef.current;
+        }
+        const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
+        const isCorrect = answer === currentWord;
+        const outcome: TrialOutcome = isCorrect ? 'correct' : 'incorrect';
+        finalizeTrial(outcome, seconds);
+        if (currentQuestion === questions.length - 1) {
+          const updatedResponseTypes = [...responseTypes, outcome];
+          const correctCount = updatedResponseTypes.filter(rt => rt === 'correct').length;
+          const total = questions.length;
+          onGameComplete({
+            correct: correctCount,
+            noAnswer: noAnswer, // outcome can only be 'correct' or 'incorrect' here
+            assisted: assisted, // outcome can only be 'correct' or 'incorrect' here
+            total,
+            newStreak: 0,
+            responsesTimes: [...responsesTimes, seconds],
+            responseTypes: updatedResponseTypes as ("correct" | "assisted" | "no-answer" | "incorrect")[],
+          });
+          return;
+        }
+        setTimeout(() => nextTrial(), 200);
+      }, 0);
       return;
     }
-
-    // Intervention: retry on incorrect; finalize on correct
+    // Intervention: retry on incorrect, finalize on correct
     if (answer === currentWord) {
       setSelectedAnswer(answer);
       setAnswered(true);
-      const ms = Date.now() - trialStartMsRef.current;
-      const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
-
-      const assistedNow = showPrompt; // visual prompt currently visible before time-up
-      const outcome = assistedNow ? 'assisted' : 'correct';
-
-      // If this is the last question, pass the updated responseTypes directly to onGameComplete
-      if (currentQuestion === questions.length - 1) {
-        const updatedResponseTypes = [...responseTypes, outcome];
-        const correctCount = updatedResponseTypes.filter(rt => rt === 'correct').length;
-        const assistedCount = updatedResponseTypes.filter(rt => rt === 'assisted').length;
-        const noAnswerCount = updatedResponseTypes.filter(rt => rt === 'no-answer').length;
-        const wordsAsked = questions.map((q) => q.word);
-        const total = questions.length;
-        onGameComplete({
-          correct: correctCount,
-          assisted: assistedCount,
-          noAnswer: noAnswerCount,
-          total,
-          newStreak: correctCount === total ? 1 : 0,
-          responsesTimes: [...responsesTimes, seconds],
-          wordsAsked,
-          responseTypes: updatedResponseTypes,
-        });
-        return;
-      }
-
-      finalizeTrial(outcome, seconds);
-      setShowRetry(false);
-      setIsTimerRunning(false); // Pause timer to show time taken
-      skipTimerResetRef.current = true;
-      setTimeout(() => nextTrial(), 2000);
+      setTimeout(() => {
+        let ms = 0;
+        if (typeof window !== 'undefined') {
+          ms = Date.now() - trialStartMsRef.current;
+        }
+        const seconds = Math.min(10, Math.max(0, Math.round(ms / 1000)));
+        const assistedNow = showPrompt;
+        const outcome = assistedNow ? 'assisted' : 'correct';
+        finalizeTrial(outcome, seconds);
+        if (currentQuestion === questions.length - 1) {
+          const updatedResponseTypes = [...responseTypes, outcome];
+          const correctCount = updatedResponseTypes.filter(rt => rt === 'correct').length;
+          const assistedCount = updatedResponseTypes.filter(rt => rt === 'assisted').length;
+          const noAnswerCount = updatedResponseTypes.filter(rt => rt === 'no-answer').length;
+          const total = questions.length;
+          onGameComplete({
+            correct: correctCount,
+            assisted: assistedCount,
+            noAnswer: noAnswerCount,
+            total,
+            newStreak: correctCount === total ? 1 : 0,
+            responsesTimes: [...responsesTimes, seconds],
+            responseTypes: updatedResponseTypes as ("correct" | "assisted" | "no-answer" | "incorrect")[],
+          });
+          return;
+        }
+        setShowRetry(false);
+        setIsTimerRunning(false);
+        skipTimerResetRef.current = true;
+        setTimeout(() => nextTrial(), 2000);
+      }, 0);
     } else {
-      // Incorrect: allow retry, show feedback, keep timer running
       setSelectedAnswer(answer);
-      setAnswered(false); // allow more answers
+      setAnswered(false);
       setShowRetry(true);
-      // Remove red highlight after short delay
       setTimeout(() => setSelectedAnswer(null), 400);
     }
   };
 
-  // ----------------------------
-  // Derived display values
-  // ----------------------------
+  // --- Derived display values ---
   const trialsFinalized = responseTypes.length;
   const pointsSoFar = correct * 10 + assisted * 5;
 
-  // ----------------------------
-  // Render
-  // ----------------------------
+  // --- Render ---
   if (questions.length === 0) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6">
@@ -613,7 +448,6 @@ export default function SessionGame({
     );
   }
 
-  // Main render
   return (
     <div className="min-h-screen flex flex-col items-center justify-start p-6 bg-gradient-to-b from-blue-700 to-blue-900">
       <div className="w-full max-w-4xl">
@@ -688,7 +522,6 @@ export default function SessionGame({
           )}
 
           {/* Centered visual prompt (if enabled) */}
-          {/* Always show prompt if timeExpired or showPrompt is true */}
           {!isBaseline && (showPrompt || timeExpired) && (
             <div className="flex-grow flex flex-col items-center justify-center text-center text-gray-700 mb-6">
               <div className="text-sm uppercase tracking-wide font-semibold">Prompt</div>
@@ -700,21 +533,16 @@ export default function SessionGame({
           <div className="grid grid-cols-2 gap-6 mb-6 w-full max-w-2xl mx-auto">
             {allOptions.map((option, idx) => {
               let buttonClass = "bg-white border-2 border-gray-300 hover:border-blue-500 text-gray-900";
-              // Time-up highlighting (ONLY time we reveal the correct answer)
               if (!isBaseline && timeExpired) {
-                if (option === currentWord) {
-                  buttonClass = "bg-green-100 border-2 border-green-500 text-green-900";
-                } else {
-                  buttonClass = "bg-gray-50 border-2 border-gray-200 text-gray-400";
-                }
+                buttonClass = option === currentWord
+                  ? "bg-green-400 border-2 border-green-600 text-white animate-pulse"
+                  : "bg-gray-50 border-2 border-gray-200 text-gray-400";
               }
-              // Retry highlighting (optional flash red on the wrong choice)
               if (!isBaseline && showRetry && !timeExpired) {
                 if (selectedAnswer && option === selectedAnswer && selectedAnswer !== currentWord) {
                   buttonClass = "bg-red-100 border-2 border-red-500 text-red-900";
                 }
               }
-              // ONLY disable wrong answers when time is up
               let disabled = false;
               if (!isBaseline && timeExpired) {
                 disabled = option !== currentWord;
@@ -743,5 +571,8 @@ export default function SessionGame({
         </div>
       </div>
     </div>
+
   );
 }
+export default SessionGame;
+
