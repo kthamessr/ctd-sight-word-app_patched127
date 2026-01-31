@@ -9,7 +9,7 @@ type TrialOutcome = "correct" | "assisted" | "no-answer" | "incorrect";
 interface GameProps {
   level: number;
   sessionNumber: number;
-  targetWords: string[];
+  targetWords?: string[];
   baselineMode?: boolean;
   onGameComplete: (result: {
     correct: number;
