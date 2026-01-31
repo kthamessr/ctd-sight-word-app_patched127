@@ -54,7 +54,7 @@ export default function Page() {
       // Baseline sessions should have their own incrementing session numbers
       const nextBaselineSessionNumber = (baselineSessions?.length || 0) + 1;
       // Filter out 'incorrect' from responseTypes for baseline session data
-      const filteredResponseTypes = result.responseTypes.filter(rt => rt !== 'incorrect');
+      const filteredResponseTypes = result.responseTypes.filter((rt: string) => rt !== 'incorrect');
       // Remove promptType for baseline sessions (always empty)
       const baselineSessionRaw = createSessionData(
         nextBaselineSessionNumber,
@@ -93,7 +93,7 @@ export default function Page() {
 
     // --- Intervention/mastery logic ---
     // Filter out 'incorrect' from responseTypes for intervention session data to match expected type
-    const filteredResponseTypes = result.responseTypes.filter(rt => rt !== 'incorrect');
+    const filteredResponseTypes = result.responseTypes.filter((rt: string) => rt !== 'incorrect');
     const newSession = createSessionData(
       levelSessionNumbers[gameMode] || 1,
       result.correct,
